@@ -1,0 +1,27 @@
+name: Refresh profile on push
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - assets/github-stats.svg
+      - koi/koi.gif
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  refresh:
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger the private profile renderer
+        env:
+          GH_TOKEN: ${{ secrets.PROFILE_REFRESH_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo '::notice::Add the PROFILE_REFRESH_TOKEN repository secret to enable this trigger.'
+            exit 0
+          fi
+          gh workflow run koi.yml --repo minimaccars/git-koi --ref main
