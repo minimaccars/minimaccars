@@ -1,0 +1,104 @@
+name: Refresh profile koi
+
+on:
+  schedule:
+    # After midnight UTC, once a full day of activity is available.
+    - cron: '23 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: profile-koi
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  refresh:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install git-koi
+        env:
+          KOI_VERSION: '1.0.2'
+          KOI_SHA256: '2e5ea416ff3667685516b47a8091037ca3c1878267f19b26446a2c41431a776d'
+        run: |
+          release="git-koi-${KOI_VERSION}-x86_64-unknown-linux-musl"
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$release.tar.gz" \
+            "https://github.com/yalongwastaken/git-koi/releases/download/v${KOI_VERSION}/$release.tar.gz"
+          printf '%s  %s\n' "$KOI_SHA256" "$release.tar.gz" | sha256sum --check
+          tar -xzf "$release.tar.gz"
+          echo "$RUNNER_TEMP/$release" >> "$GITHUB_PATH"
+
+      - name: Collect GitHub activity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KOI_LOGIN: ${{ github.repository_owner }}
+        run: git-koi collect "$KOI_LOGIN" --output "$RUNNER_TEMP/koi-snapshot.json"
+
+      - name: Choose the coat and render
+        run: |
+          snapshot="$RUNNER_TEMP/koi-snapshot.json"
+          body=$(node --input-type=module - "$snapshot" <<'JS'
+          import { readFileSync } from 'node:fs';
+
+          const { repositories, language_colors: languageColors } = JSON.parse(
+            readFileSync(process.argv[2], 'utf8'),
+          );
+          const colorsByRepo = new Map();
+          for (const repo of repositories) {
+            const hex = languageColors[repo.primary_language];
+            if (repo.visibility !== 'public' || repo.is_fork || !/^#[\da-f]{6}$/i.test(hex)) continue;
+            const rgb = hex.slice(1).match(/../g).map((byte) => parseInt(byte, 16));
+            colorsByRepo.set(repo.repository_id, rgb);
+          }
+
+          // Each eligible owned or contributed repository gets one vote.
+          // Pick the supported coat closest to the mix of GitHub language colors.
+          const coats = {
+            white: [255, 255, 255],
+            black: [38, 43, 68],
+            asagi: [70, 100, 155],
+            tea: [184, 111, 80],
+            gold: [254, 174, 52],
+            platinum: [192, 203, 220],
+          };
+          const colors = [...colorsByRepo.values()];
+          let body = 'white';
+          if (colors.length > 0) {
+            const average = [0, 1, 2].map((channel) =>
+              colors.reduce((sum, rgb) => sum + rgb[channel], 0) / colors.length,
+            );
+            const distance = (shade) => shade.reduce(
+              (sum, value, channel) => sum + (value - average[channel]) ** 2, 0,
+            );
+            body = Object.keys(coats).reduce((closest, candidate) =>
+              distance(coats[candidate]) < distance(coats[closest]) ? candidate : closest,
+            );
+          }
+          console.log(body);
+          JS
+          )
+          echo "Selected coat: $body"
+          git-koi render "$snapshot" --output-dir "$RUNNER_TEMP/koi" --body "$body"
+          install -D -m 644 "$RUNNER_TEMP/koi/koi.gif" koi/koi.gif
+
+      - name: Publish the GIF if it changed
+        run: |
+          git add -- koi/koi.gif
+          if git diff --cached --quiet; then
+            echo "The GIF is unchanged."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Refresh profile koi from GitHub activity'
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
