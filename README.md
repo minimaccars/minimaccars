@@ -1,4 +1,4 @@
-# Hi, I'm 4nwr_5adiq
+# Hi, I'm macmini
 
 ## GitHub stats
 
